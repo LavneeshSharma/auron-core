@@ -1,6 +1,13 @@
-venv/
+# Python
 __pycache__/
 *.pyc
+venv/
 .env
-*.log
 
+# Data
+data/
+*.csv
+
+# Models
+models/
+*.pt
