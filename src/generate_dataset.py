@@ -2,26 +2,41 @@
 import json
 import random
 from tqdm import tqdm
+import argparse
 
-# --- CONFIGURATION ---
-OUTPUT_FILE = "../data/commands.jsonl"
-NUM_SAMPLES = 100000
-
-# --- DATA FOR GENERATION (EXPANDED) ---
-APP_NAMES = ["Chrome", "Spotify", "VS Code", "Terminal", "Calculator", "Photoshop", "Netflix", "Discord", "Slack", "Firefox", "Word", "Excel", "Brave Browser"]
-FILE_NAMES = ["budget report", "presentation slides", "project plan", "meeting notes", "my resume", "vacation photos", "quarterly earnings", "user data"]
-FILE_TYPES = ["document", "spreadsheet", "presentation", "image", "pdf", "text file", "archive", "script"]
-URLS = ["google.com", "youtube.com", "github.com", "huggingface.co", "wikipedia.org", "reddit.com", "amazon.com", "linkedin.com", "nytimes.com"]
+# --- DATA FOR GENERATION (EXPANDED V2) ---
+APP_NAMES = [
+    "Chrome", "Spotify", "VS Code", "Terminal", "Calculator", "Photoshop", "Netflix", "Discord", 
+    "Slack", "Firefox", "Word", "Excel", "Brave Browser", "iTerm", "Notes", "Calendar", "Mail",
+    "System Settings", "Music", "TV", "Notion", "Figma", "Postman"
+]
+FILE_NAMES = [
+    "budget report", "presentation slides", "project plan", "meeting notes", "my resume", 
+    "vacation photos", "quarterly earnings", "user data", "draft essay", "logo design",
+    "final thesis", "api documentation", "invoice template"
+]
+FILE_TYPES = ["document", "spreadsheet", "presentation", "image", "pdf", "text file", "archive", "script", "folder"]
+URLS = [
+    "google.com", "youtube.com", "github.com", "huggingface.co", "wikipedia.org", "reddit.com", 
+    "amazon.com", "linkedin.com", "nytimes.com", "notion.so", "figma.com", "stackoverflow.com"
+]
 SEARCH_QUERIES = [
     "the weather in Howrah", "the latest news on AI", "how to bake a cake", "python tutorials", 
-    "the best restaurants near me", "what is a large language model", "the history of India", "how to use git", "machine learning courses"
+    "the best restaurants near me", "what is a large language model", "the history of India", 
+    "how to use git", "machine learning courses", "how to fix a flat tire"
 ]
 NOTE_CONTENTS = [
     "pick up laundry tomorrow at 5pm", "call mom this evening", "buy milk, eggs, and bread",
-    "the meeting is rescheduled to 3 PM", "follow up on the project status", "remember to submit the report by Friday"
+    "the meeting is rescheduled to 3 PM", "follow up on the project status", 
+    "remember to submit the report by Friday", "the wifi password is guest1234"
 ]
+MEDIA_TITLES = [
+    "the new Taylor Swift song", "lofi beats to relax to", "the latest Marques Brownlee video",
+    "Bohemian Rhapsody", "the Queen's Gambit soundtrack", "how to cook pasta"
+]
+PLATFORMS = ["YouTube", "Spotify"]
 
-# --- INTENT TEMPLATES (EXPANDED FOR MORE VARIETY) ---
+# --- INTENT TEMPLATES (EXPANDED FOR MORE VARIETY & NEW INTENTS) ---
 INTENT_DEFINITIONS = {
     "os.app.open": {
         "templates": [
@@ -41,6 +56,13 @@ INTENT_DEFINITIONS = {
         "templates": [
             "find my {file_name}", "search for a file called {file_name}", "look for my {file_name} {file_type}",
             "show me all {file_type}s", "where is my {file_name}?", "I need to find the {file_name} {file_type}"
+        ],
+        "slots": {"file_name": FILE_NAMES, "file_type": FILE_TYPES}
+    },
+    "file.create": {
+        "templates": [
+            "create a new {file_type}", "make a {file_type} called {file_name}", "new {file_type}",
+            "I need to create a {file_type} for my {file_name}"
         ],
         "slots": {"file_name": FILE_NAMES, "file_type": FILE_TYPES}
     },
@@ -64,10 +86,28 @@ INTENT_DEFINITIONS = {
             "new note: {content}", "jot down that {content}", "make a memo about {content}"
         ],
         "slots": {"content": NOTE_CONTENTS}
+    },
+    # --- ADDED MEDIA.PLAY ---
+    "media.play": {
+        "templates": [
+            "play {media_title}", "play {media_title} on {platform}", "I want to listen to {media_title}",
+            "can you find {media_title} on {platform}?"
+        ],
+        "slots": {"media_title": MEDIA_TITLES, "platform": PLATFORMS}
+    },
+    "media.pause": {
+        "templates": ["pause", "pause the music", "hold on", "pause playback"],
+        "slots": {}
+    },
+    "media.next": {
+        "templates": ["next", "next song", "skip this track", "play the next one"],
+        "slots": {}
+    },
+    "media.previous": {
+        "templates": ["previous", "go back", "play the last song", "previous track"],
+        "slots": {}
     }
 }
-
-# (The rest of the script remains the same)
 
 def generate_command():
     intent_name = random.choice(list(INTENT_DEFINITIONS.keys()))
@@ -85,12 +125,20 @@ def generate_command():
     return {"text": final_text, "intent": intent_name, "slots": slots}
 
 def main():
-    print(f"--- Starting dataset generation for {NUM_SAMPLES} samples ---")
-    with open(OUTPUT_FILE, 'w') as f:
-        for _ in tqdm(range(NUM_SAMPLES), desc="Generating Commands"):
+    parser = argparse.ArgumentParser(description="Generate a synthetic dataset for NLU intent classification.")
+    parser.add_argument("--samples", type=int, default=100000, help="The total number of command samples to generate.")
+    parser.add_argument("--output", type=str, default="../data/commands.jsonl", help="The path to the output .jsonl file.")
+    args = parser.parse_args()
+    num_samples = args.samples
+    output_file = args.output
+    
+    print(f"--- Starting dataset generation for {num_samples} samples ---")
+    
+    with open(output_file, 'w') as f:
+        for _ in tqdm(range(num_samples), desc="Generating Commands"):
             entry = generate_command()
             f.write(json.dumps(entry) + '\n')
-    print(f"\n--- Successfully generated and saved dataset to {OUTPUT_FILE} ---")
+            
+    print(f"\n--- Successfully generated and saved dataset to {output_file} ---")
 
-if __name__ == "__main__":
-    main()
+

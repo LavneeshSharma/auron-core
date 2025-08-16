@@ -27,7 +27,7 @@ def get_mistral_chat_response(messages: list) -> str:
         response = client.chat_completion(
             messages=messages,
             max_tokens=512,
-            temperature=0.7
+            temperature=0.1
         )
         # The response is an object, so we need to extract the message content
         return response.choices[0].message.content

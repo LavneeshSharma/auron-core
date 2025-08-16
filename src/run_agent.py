@@ -1,81 +1,128 @@
 # src/run_agent.py
 import os
 import json
-from llm_service import get_mistral_chat_response
-from predict_intent import predict as predict_intent_func
-from executor import execute_action
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import re
+
+# --- Clean, package-based imports ---
+from services.llm_service import get_mistral_chat_response
+from nlu.classifier import load_nlu_model, predict_intent
+from skills.executor import execute_action
+from agent.memory import Memory
 
 # --- CONFIGURATION ---
 TOKENIZER_NAME = "distilbert-base-uncased"
-CHECKPOINT_FOLDER = "checkpoint-30500" # Make sure this is the correct checkpoint number
+# IMPORTANT: Update this to the checkpoint number of your newly trained model
+CHECKPOINT_FOLDER = "checkpoint-30000" 
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 MODEL_PATH = os.path.abspath(os.path.join(SCRIPT_DIR, "../models", "nlu_classifier", CHECKPOINT_FOLDER))
 
-def load_nlu_model():
-    """Loads the NLU model and tokenizer."""
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME)
-        model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
-        return tokenizer, model
-    except OSError:
-        print(f"Error: NLU model not found at {MODEL_PATH}")
-        return None, None
-
 def extract_slots_with_llm(user_command: str, intent: str) -> dict:
     """
-    Uses the powerful Mistral LLM to extract slots from the user's command
-    based on the predicted intent.
+    Extracts slots from user command using LLM with robust fallbacks.
     """
     prompt = f"""
-    Given the user's command and the predicted intent, extract the parameters (slots) and return them as a JSON object.
-    
+    Extract the parameters (slots) for the predicted intent strictly as JSON.
+
     User Command: "{user_command}"
     Predicted Intent: "{intent}"
-    
-    Example for 'os.app.open':
-    Command: "can you open spotify for me" -> {{"app_name": "Spotify"}}
-    
-    Example for 'browser.open':
-    Command: "bring up the website for the New York Times" -> {{"url": "nytimes.com"}}
 
-    Example for 'browser.search':
-    Command: "search for how to use git" -> {{"query": "how to use git"}}
+    ✅ Example JSON Response:
+    {{
+      "media_title": "Shape of You",
+      "platform": "YouTube"
+    }}
 
-    Now, extract the slots for the given command.
-    IMPORTANT: Your response MUST be a single, valid JSON object and nothing else. Do not add any conversational text, explanations, or markdown formatting.
+    ❌ Do not include explanations, text, or markdown. Only valid JSON.
     """
-    
     messages = [{"role": "user", "content": prompt}]
-    
+    slots = {}
+
     try:
-        response_text = get_mistral_chat_response(messages)
-        
+        response_text = get_mistral_chat_response(messages).strip()
         json_start = response_text.find('{')
         json_end = response_text.rfind('}') + 1
-        
         if json_start != -1 and json_end != 0:
             json_string = response_text[json_start:json_end]
             slots = json.loads(json_string)
-            return slots
-        else:
-            print(f"Error: Could not find a valid JSON object in the LLM response: {response_text}")
-            return {}
-
     except Exception as e:
-        print(f"Error extracting slots with LLM: {e}")
-        return {}
+        print(f"LLM JSON parsing failed: {e}. Relying on fallbacks.")
 
+    # --- Fallback 1: Regex on LLM's conversational response ---
+    if not slots or all(v == "" for v in slots.values()):
+        mt_match = re.search(r"Media Title:\s*['\"]?([^'\"]+)['\"]?", response_text, re.I)
+        pf_match = re.search(r"Platform:\s*['\"]?([^'\"]+)['\"]?", response_text, re.I)
+        if mt_match:
+            slots["media_title"] = mt_match.group(1).strip()
+        if pf_match:
+            slots["platform"] = pf_match.group(1).strip()
+
+    # --- Fallback 2: Direct regex on user command ---
+    if intent == "media.play" and not slots.get("media_title"):
+        match = re.match(r"play (.+?)(?: on (\w+))?$", user_command, re.I)
+        if match:
+            slots["media_title"] = match.group(1).strip()
+            if match.group(2):
+                slots["platform"] = match.group(2).capitalize()
+
+    if intent == "os.app.open" and not slots.get("app_name"):
+        match = re.match(r"(?:open|launch|start) (.+)", user_command, re.I)
+        if match:
+            slots["app_name"] = match.group(1).strip()
+
+    if intent == "browser.search" and not slots.get("query"):
+        match = re.match(r"(?:search|google) (.+)", user_command, re.I)
+        if match:
+            slots["query"] = match.group(1).strip()
+
+    # --- Fallback 3: Keyword cleanup ---
+    if intent == "media.play" and not slots.get("media_title"):
+        cleaned = re.sub(r"\b(play|on youtube|on spotify|song|video)\b", "", user_command, flags=re.I).strip()
+        slots["media_title"] = cleaned
+        if "youtube" in user_command.lower():
+            slots["platform"] = "YouTube"
+        elif "spotify" in user_command.lower():
+            slots["platform"] = "Spotify"
+
+    if intent == "productivity.note.create" and not slots.get("content"):
+        match = re.search(r"(?:create note|make note|note)\s+(.+)", user_command, re.I)
+        if match:
+            slots["content"] = match.group(1).strip()
+
+    return slots
+
+def normalize_slots(intent: str, slots: dict) -> dict:
+    """
+    Normalizes slot names so the executor gets a consistent format.
+    """
+    normalized_slots = {}
+    if intent == "media.play":
+        normalized_slots["media_title"] = (slots.get("media_title") or slots.get("song_title") or slots.get("song_name") or slots.get("track") or "")
+        normalized_slots["platform"] = (slots.get("platform") or slots.get("source") or slots.get("service") or "YouTube")
+    elif intent == "browser.open":
+        normalized_slots["url"] = slots.get("url") or slots.get("website") or ""
+    elif intent == "browser.search":
+        normalized_slots["query"] = slots.get("query") or slots.get("search") or ""
+    elif intent == "os.app.open":
+        normalized_slots["app_name"] = slots.get("app_name") or slots.get("application") or ""
+    elif intent == "os.app.close":
+        normalized_slots["app_name"] = slots.get("app_name") or slots.get("application") or ""
+    elif intent == "productivity.note.create":
+        normalized_slots["content"] = (slots.get("content") or slots.get("note") or slots.get("text") or "")
+    else:
+        normalized_slots = slots
+    return normalized_slots
 
 def main():
     """
     The main agent loop that wires everything together.
     """
     print("--- Loading Mini-JARVIS NLU Core ---")
-    nlu_tokenizer, nlu_model = load_nlu_model()
+    nlu_tokenizer, nlu_model = load_nlu_model(MODEL_PATH, TOKENIZER_NAME)
     if not nlu_model:
         return
+        
+    agent_memory = Memory()
     print("--- NLU Core Loaded. Mini-JARVIS is ready. ---")
     print("Type 'exit' or 'quit' to stop.\n")
 
@@ -84,27 +131,26 @@ def main():
         if user_command.lower() in ["exit", "quit"]:
             break
 
-        # 1. Predict Intent with the local NLU model
-        predicted_intent, confidence = predict_intent_func(nlu_tokenizer, nlu_model, user_command)
+        # 1. Predict Intent
+        predicted_intent, confidence = predict_intent(nlu_tokenizer, nlu_model, user_command)
         print(f"NLU -> Intent: {predicted_intent} (Confidence: {confidence:.2f})")
-
-        # 2. Extract Slots with the powerful LLM
-        print("LLM -> Extracting parameters...")
-        slots = extract_slots_with_llm(user_command, predicted_intent)
         
-        # --- MODIFICATION START ---
-        # Check if the LLM returned a nested dictionary and flatten it if so.
-        if predicted_intent in slots and isinstance(slots[predicted_intent], dict):
-            print("LLM -> (Note: Unpacking nested dictionary from LLM response)")
-            slots = slots[predicted_intent]
-        # --- MODIFICATION END ---
-            
-        print(f"LLM -> Extracted Slots: {slots}")
+        if confidence < 0.6:
+            print(f"⚠️  I'm not sure what you mean. Could you rephrase that?")
+            continue
 
-        # 3. Execute the action
+        # 2. Extract & Normalize Slots
+        print("LLM -> Extracting parameters...")
+        raw_slots = extract_slots_with_llm(user_command, predicted_intent)
+        slots = normalize_slots(predicted_intent, raw_slots)
+        print(f"LLM -> Normalized Slots: {slots}")
+
+        # 3. Update Memory
+        agent_memory.update(predicted_intent, slots)
+
+        # 4. Execute Action
         execute_action(predicted_intent, slots)
         print("-" * 20)
-
 
 if __name__ == "__main__":
     main()
